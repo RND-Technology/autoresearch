@@ -202,47 +202,102 @@ def propose_mutation(exp_id: str, score_history: list[float]) -> str | None:
     if offline_mode:
         log.info(f"📦 OFFLINE MODE: Applying synthetic mutation for {exp_id}")
         current = MUTABLE_FILE.read_text()
-        # Simple bounded perturbation of BARGE_IN_THRESHOLD
-        import re
-        m = re.search(r"BARGE_IN_THRESHOLD\s*=\s*([0-9.]+)", current)
+        import re, random as _rng
+
+        # All mutable params with their bounds and type-annotated regex patterns
+        PARAMS = [
+            ("BARGE_IN_THRESHOLD", float, 0.010, 0.150, 0.005),
+            ("SILENCE_TIMEOUT_MS", int, 200, 1200, 50),
+            ("REDEMPTION_FRAMES", int, 2, 20, 1),
+            ("PAUSE_TOLERANCE_MS", int, 100, 800, 50),
+            ("TEMPERATURE", float, 0.0, 1.2, 0.05),
+            ("TOP_P", float, 0.5, 1.0, 0.05),
+            ("STREAM_CHUNK_TOKENS", int, 1, 10, 1),
+            ("MAX_TOKENS", int, 50, 400, 25),
+            ("DB_POOL_SIZE", int, 2, 50, 5),
+            ("HTTP_TIMEOUT_MS", int, 2000, 15000, 500),
+            ("JWT_CACHE_TTL_S", int, 60, 600, 30),
+        ]
+
+        # Pick a random param to mutate (explore all dimensions)
+        param_name, ptype, lo, hi, step = _rng.choice(PARAMS)
+        # Match with optional type annotation: NAME: type = VALUE or NAME = VALUE
+        pattern = rf"({param_name})\s*(?::\s*\w+\s*)?\s*=\s*([0-9.]+)"
+        m = re.search(pattern, current)
         if m:
-            current_val = float(m.group(1))
-            delta = 0.005 * (1 if len(score_history) % 2 == 0 else -1)
-            new_val = max(0.01, min(0.15, current_val + delta))
-            new_code = current.replace(m.group(0), f"BARGE_IN_THRESHOLD = {new_val:.4f}")
-            log.info(f"   BARGE_IN_THRESHOLD: {current_val:.4f} → {new_val:.4f}")
+            current_val = ptype(float(m.group(2)))
+            direction = _rng.choice([-1, 1])
+            if ptype == float:
+                new_val = round(max(lo, min(hi, current_val + direction * step)), 4)
+                val_str = f"{new_val:.3f}"
+            else:
+                new_val = max(int(lo), min(int(hi), int(current_val + direction * step)))
+                val_str = str(new_val)
+            # Replace the full match preserving type annotation
+            new_code = current[:m.start()] + m.group(0)[:m.start(2)-m.start()] + val_str + current[m.end(2):]
+            log.info(f"   {param_name}: {current_val} → {new_val} (step={direction*step})")
             return new_code
+        log.warning(f"   Could not find {param_name} in voice_optimizer.py")
         return None
 
-    # Online mode: invoke agent via CLI (requires claude or codex CLI installed)
+    # Online mode: invoke Claude Code CLI as the mutation agent
     agent_cmd = os.environ.get("LIV_HANA_AGENT_CMD", "claude")
+    current_code = MUTABLE_FILE.read_text()
     prompt = f"""You are the Mayor of Optimization for Liv Hana SI.
-Your job: propose ONE bounded change to voice_optimizer.py to improve the SCORE metric.
-Current score history: {score_history[-10:]}
-Constraints:
-- Only modify BARGE_IN_THRESHOLD, SILENCE_TIMEOUT_MS, REDEMPTION_FRAMES, TEMPERATURE, TOP_P, POOL_SIZE
-- NEVER add imports for os, subprocess, socket, requests, urllib
-- NEVER add eval(), exec(), open() calls
-- NEVER touch EVALUATOR constants
-- Return ONLY the complete new voice_optimizer.py file content, nothing else
+Your job: propose ONE bounded change to voice_optimizer.py to improve the composite SCORE metric.
+Score formula: TTFA(40%) + RALPH(35%) + Barge-In(15%) + TokenVelocity(10%)
+
+Current score history (last 10): {score_history[-10:]}
+
+Mutable parameters and bounds:
+- BARGE_IN_THRESHOLD [0.010, 0.150] — sweet spot ~0.045
+- SILENCE_TIMEOUT_MS [200, 1200]
+- REDEMPTION_FRAMES [2, 20] — sweet spot ~8
+- PAUSE_TOLERANCE_MS [100, 800]
+- TEMPERATURE [0.0, 1.2] — >1.2 = RALPH violation
+- TOP_P [0.5, 1.0]
+- STREAM_CHUNK_TOKENS [1, 10] — lower = faster TTFA
+- MAX_TOKENS [50, 400]
+- DB_POOL_SIZE [2, 50] — diminishing returns >20
+- HTTP_TIMEOUT_MS [2000, 15000]
+- JWT_CACHE_TTL_S [60, 600]
+
+Rules:
+- Change EXACTLY ONE parameter per experiment
+- Stay within bounds
+- NO new imports (os, subprocess, socket, requests, urllib)
+- NO eval(), exec(), open() calls
+- Return ONLY the complete new voice_optimizer.py content, nothing else
+
 Current file:
 ```python
-{MUTABLE_FILE.read_text()}
+{current_code}
 ```"""
 
     try:
+        import re
         result = subprocess.run(
-            [agent_cmd, "-p", prompt],
-            capture_output=True, text=True, timeout=120,
-            env={**os.environ}
+            [agent_cmd, "--print", prompt],
+            capture_output=True, text=True, timeout=180,
+            cwd=str(ROOT),
+            env={**os.environ, "CLAUDE_MODEL": "haiku"}
         )
         if result.returncode == 0 and result.stdout.strip():
-            # Extract code block if wrapped in ```
             code = result.stdout
+            # Extract code block if wrapped in ```python ... ```
             m = re.search(r"```python\n(.+?)```", code, re.DOTALL)
             if m:
                 code = m.group(1)
-            return code
+            # Basic sanity: must contain the dataclass and validate_bounds
+            if "VoiceOptimizerConfig" in code and "validate_bounds" in code:
+                return code
+            log.warning("Agent output missing required structures, discarding")
+    except FileNotFoundError:
+        log.warning(f"Agent CLI '{agent_cmd}' not found — falling back to offline mode")
+        os.environ["LIV_HANA_OFFLINE"] = "1"
+        return propose_mutation(exp_id, score_history)
+    except subprocess.TimeoutExpired:
+        log.warning("Agent CLI timed out after 180s")
     except Exception as e:
         log.warning(f"Agent call failed: {e}")
     return None
