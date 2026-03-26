@@ -20,12 +20,12 @@ from dataclasses import dataclass, asdict
 # VAD / Barge-In Parameters (Deepgram equivalent)
 # ---------------------------------------------------------------------------
 
-BARGE_IN_THRESHOLD: float = 0.050   # Voice activity detection confidence threshold
+BARGE_IN_THRESHOLD: float = 0.045   # Voice activity detection confidence threshold
                                       # Range: [0.010, 0.150]
                                       # Lower = more sensitive (more interruptions)
                                       # Higher = less sensitive (misses real barge-ins)
 
-SILENCE_TIMEOUT_MS: int = 600        # Milliseconds of silence before end-of-utterance
+SILENCE_TIMEOUT_MS: int = 450        # Milliseconds of silence before end-of-utterance
                                       # Range: [200, 1200]
 
 REDEMPTION_FRAMES: int = 9           # Frames to wait before confirming barge-in
@@ -38,13 +38,13 @@ PAUSE_TOLERANCE_MS: int = 400        # How long to wait mid-sentence before cutt
 # LLM Cascade Hyperparameters
 # ---------------------------------------------------------------------------
 
-TEMPERATURE: float = 0.650             # Generation temperature
+TEMPERATURE: float = 0.511             # Generation temperature
                                       # Range: [0.0, 1.5]
 
 TOP_P: float = 0.950                   # Nucleus sampling threshold
                                       # Range: [0.5, 1.0]
 
-STREAM_CHUNK_TOKENS: int = 3         # Tokens to buffer before streaming to TTS
+STREAM_CHUNK_TOKENS: int = 4         # Tokens to buffer before streaming to TTS
                                       # Range: [1, 10]
                                       # Lower = lower TTFA, higher = better prosody
 
@@ -55,10 +55,10 @@ MAX_TOKENS: int = 175                # Max response tokens
 # Infrastructure Knobs
 # ---------------------------------------------------------------------------
 
-DB_POOL_SIZE: int = 10               # AlloyDB connection pool size
+DB_POOL_SIZE: int = 15               # AlloyDB connection pool size
                                       # Range: [2, 50]
 
-HTTP_TIMEOUT_MS: int = 7500          # Fetch timeout for LLM API calls (ms)
+HTTP_TIMEOUT_MS: int = 7000          # Fetch timeout for LLM API calls (ms)
                                       # Range: [2000, 15000]
 
 JWT_CACHE_TTL_S: int = 240           # JWT cache TTL in seconds
